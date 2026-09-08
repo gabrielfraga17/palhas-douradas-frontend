@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
 import { Shirt, Gem, Sparkles, Flame, Plus, Check, ChevronDown, ShoppingBag } from "lucide-react";
+import { c, serif, sans, fmt } from "./theme";
+import { useCart } from "./hooks/useCart";
+import CartDrawer from "./components/CartDrawer";
 
 // ---- Integração com a Sales Platform API -------------------------------
 // URL do Cloud Run provisionado na Etapa 1. Sem autenticação por enquanto
@@ -13,24 +16,6 @@ const API_URL = "https://sales-platform-api-sytosdcb4q-rj.a.run.app";
 // pequeno; se crescer, vale pedir um endpoint dedicado de busca por SKU.
 const SKU_CAMISETA = "CAM-MANTO-OBALUAE";
 const SKU_PULSEIRA = "PULS-GIRO-OXUM";
-
-// ---- Design tokens ---------------------------------------------------
-const c = {
-  sacred: "#F9F6F0",
-  sand: "#EFE9DB",
-  charcoal: "#4A3E3D",
-  charcoalDeep: "#221C1B",
-  brown: "#3E2723",
-  rust: "#B5541F",
-  gold: "#D4AF37",
-  goldSoft: "#E8D9B0",
-  white: "#FFFFFF",
-};
-
-const serif = "'Cormorant Garamond', Georgia, serif";
-const sans = "'Inter', -apple-system, sans-serif";
-
-const fmt = (n) => `R$ ${n.toFixed(2).replace(".", ",")}`;
 
 // ---- Helpers de mapeamento API -> UI -----------------------------------
 // Extrai o preço B2C de um Produto vindo da API (schema real tem uma lista
@@ -206,6 +191,46 @@ export default function ProductPage() {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
 
+  // ---- Carrinho real (Sales Platform API) --------------------------------
+  // Nomes prefixados com "Carrinho"/"cart" para não colidir com os estados
+  // de carregamento/erro do fetch de produtos acima.
+  const {
+    carrinho,
+    elegibilidade,
+    carregando: carregandoCarrinho,
+    erro: erroCarrinho,
+    quantidadeTotalItens,
+    adicionarAoCarrinho,
+    atualizarQuantidadeItem,
+    removerItem,
+  } = useCart();
+  const [carrinhoAberto, setCarrinhoAberto] = useState(false);
+
+  async function handleAdicionarSacola() {
+    if (!tamanho) return;
+    try {
+      await adicionarAoCarrinho({
+        produtoId: camiseta.produto_id,
+        skuVariacao: tamanho.skuVariacao,
+        quantidade: 1,
+      });
+      if (bundleOn) {
+        const variacaoPulseira = pulseira.variacoes[0];
+        await adicionarAoCarrinho({
+          produtoId: pulseira.produto_id,
+          skuVariacao: variacaoPulseira.sku_variacao,
+          quantidade: 1,
+        });
+      }
+      setCarrinhoAberto(true);
+    } catch {
+      // Erro já fica exposto via erroCarrinho e exibido dentro do CartDrawer
+      // na próxima vez que ele abrir; aqui só evitamos que a exceção suba
+      // sem tratamento para o React.
+      setCarrinhoAberto(true);
+    }
+  }
+
   useEffect(() => {
     let cancelado = false;
 
@@ -274,6 +299,38 @@ export default function ProductPage() {
       className="min-h-screen w-full pb-24 lg:pb-0"
       style={{ backgroundColor: c.sacred, fontFamily: sans }}
     >
+      {/* Botão flutuante da sacola — posicionamento provisório (canto
+          superior direito), fora do fluxo do header centralizado, para não
+          interferir na revisão de UX ainda pendente sobre o layout do
+          cabeçalho. Reposicionar aqui é uma mudança de poucas linhas. */}
+      <button
+        onClick={() => setCarrinhoAberto(true)}
+        className="fixed top-5 right-5 z-40 w-12 h-12 rounded-full flex items-center justify-center focus:outline-none"
+        style={{ border: `1.5px solid ${c.charcoalDeep}`, backgroundColor: c.white }}
+        aria-label="Abrir sacola"
+      >
+        <ShoppingBag className="w-[18px] h-[18px]" strokeWidth={1.3} color={c.charcoalDeep} />
+        {quantidadeTotalItens > 0 && (
+          <span
+            className="absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center text-[10px]"
+            style={{ backgroundColor: c.gold, color: c.charcoalDeep }}
+          >
+            {quantidadeTotalItens}
+          </span>
+        )}
+      </button>
+
+      <CartDrawer
+        aberto={carrinhoAberto}
+        onFechar={() => setCarrinhoAberto(false)}
+        carrinho={carrinho}
+        elegibilidade={elegibilidade}
+        carregando={carregandoCarrinho}
+        erro={erroCarrinho}
+        onAtualizarQuantidade={atualizarQuantidadeItem}
+        onRemoverItem={removerItem}
+      />
+
       {/* Top brand bar */}
       <header className="px-5 pt-10 pb-6 sm:px-10 flex flex-col items-center gap-6">
         <Logomark size={88} />
@@ -485,15 +542,18 @@ export default function ProductPage() {
 
             {/* CTA */}
             <button
+              onClick={handleAdicionarSacola}
               className="w-full py-4 rounded-sm flex items-center justify-center gap-2 text-[15px] transition-opacity duration-150 hover:opacity-90 focus:outline-none disabled:opacity-50"
               style={{ backgroundColor: c.charcoalDeep, color: c.sacred }}
-              disabled={!tamanho}
+              disabled={!tamanho || carregandoCarrinho}
             >
               <ShoppingBag className="w-4 h-4" strokeWidth={1.5} />
               <span>
-                {tamanho
-                  ? `Adicionar à sacola — ${fmt(total)}`
-                  : "Selecione um tamanho"}
+                {!tamanho
+                  ? "Selecione um tamanho"
+                  : carregandoCarrinho
+                  ? "Adicionando..."
+                  : `Adicionar à sacola — ${fmt(total)}`}
               </span>
             </button>
             <p className="text-[12px] text-center mt-3" style={{ color: c.charcoal }}>
@@ -540,11 +600,16 @@ export default function ProductPage() {
           </p>
         </div>
         <button
+          onClick={handleAdicionarSacola}
           className="flex-1 py-3 rounded-sm text-[14px] disabled:opacity-50"
           style={{ backgroundColor: c.charcoalDeep, color: c.sacred }}
-          disabled={!tamanho}
+          disabled={!tamanho || carregandoCarrinho}
         >
-          {tamanho ? "Adicionar à sacola" : "Selecione um tamanho"}
+          {!tamanho
+            ? "Selecione um tamanho"
+            : carregandoCarrinho
+            ? "Adicionando..."
+            : "Adicionar à sacola"}
         </button>
       </div>
     </div>
